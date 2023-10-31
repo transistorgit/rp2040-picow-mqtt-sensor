@@ -22,9 +22,6 @@
 #include <LittleFS.h>
 #include "hardware/gpio.h"
 
-//#define SECRET_SSID ""
-//#define SECRET_PASS ""
-
 #ifndef SECRET_SSID
 #include "arduino_secrets.h"
 #endif
@@ -34,25 +31,28 @@ const int waterAutoOn = 60UL; // in sec. Auto water/ day
 const char *ssid = SECRET_SSID;
 const char *password = SECRET_PASS;
 #define PIN_D21              21
+#define PS_PIN 23 // Power Save Pin, H to disable, L default
 
-const int HL_PIN = A0; // PICO pin 31
-const int HR_PIN = A1; // PICO pin 32
+const int SENSE_PIN = A0; // PICO pin 31, Measure external Voltage
+const int AGND_PIN = A1; // PICO pin 32, Measure analog ground level
 const int relayPin = 22; // PICO pin 29
 unsigned int irqPin = PIN_D21;
 
-const int msgPeriod = 15 * 1000U;
+const int msgPeriod = 1 * 1000U;
 const int wifiPeriod = 300 * 1000U;
 int ledPeriod = 2 * 1000UL;
 
-const char* mqttBroker = "test.mosquitto.org";
+const char* mqttBroker = "192.168.168.112";
 const int mqtt_port = 1883;  // Sets the server details.
 // const char* mqtt_server = "91.121.93.94";
 const char* ntpServer = "ntp1.tecnico.ulisboa.pt";
 // int        port        = 1883;
-const char willTopic[] = "ipfn/picoW/will";
-const char inTopic[]   = "ipfn/picoW/in";
-const char outTopic[]  = "ipfn/picoW/out";
-String willPayload = "oh no!, Pico W lost Mqtt Connection";
+const char willTopic[] = "iot/voltagesensor/will";
+const char inTopic[]   = "iot/voltagesensor/in";
+const char outTopicVoltage[]  = "iot/weidemann/voltage";
+const char outTopicTemperature[]  = "iot/weidemann/cputemp";
+const char outTopicRSSI[]  = "iot/weidemann/rssi";
+String willPayload = "oh no!, weidemann lost Mqtt Connection";
 const bool willRetain = true;
 const int willQos = 1;
 const int subscribeQos = 1;
@@ -66,27 +66,14 @@ bool led_blink = false;
 // int count = 0;
 int irqCount, irqNext = 0;
 
-unsigned int sumWater = 0;
-unsigned long stopPump = 0, nextWater;
-
-const long gmtOffset_sec     = 0;
-const int daylightOffset_sec = 0; // 3600;
-
 #define WIFI_RETRY 20
-
-#define MSG_BUFFER_SIZE 50
-
-#define NH2O_E_ADD 0x10
-#define SUMH2O_E_ADD 0x14
-#define CNTH2O_E_ADD 0x18
-#define REBOOTS_E_ADD 0x1C
+#define MSG_BUFFER_SIZE 100
 
 int wifiOK = 0;
 int wifiRetries = 0 ;
 bool ntpOK = false;
 bool relayState = false;
 
-unsigned long reboots;
 void onMqttMessage(int messageSize);
 
 int setupMqtt(){
@@ -130,25 +117,14 @@ void reconnectWifi() {
     Serial.print("No link. Wifi "); Serial.print(WiFi.status());
     Serial.print(" MQTT "); Serial.println(mqttClient.connected());
     mqttClient.unsubscribe(inTopic);
-    if(wifiRetries++ > 5){
-        // End setup(). Next H20 1671582148
-        EEPROM.put(NH2O_E_ADD, nextWater);
-        EEPROM.put(SUMH2O_E_ADD, sumWater);
-        EEPROM.put(CNTH2O_E_ADD, irqCount);
-        reboots++;
-        EEPROM.put(REBOOTS_E_ADD, reboots);
-        if (EEPROM.commit()) {
-            Serial.println("EEPROM successfully committed");
-        } else {
-            Serial.println("ERROR! EEPROM commit failed");
-        }
+    if(wifiRetries++ > WIFI_RETRY){
         Serial.println("Rebooting....");
         rp2040.reboot();
     }
     wifiOK = 0;
     // We start by connecting to a WiFi network
     Serial.println();
-    Serial.print("Re-coonnecting to ");
+    Serial.print("Re-connecting to ");
     Serial.println(ssid);
 
     WiFi.disconnect();
@@ -223,7 +199,6 @@ void onMqttMessage(int messageSize) {
     time_t nowTime = time(nullptr);
     unsigned long ntpTime = nowTime;
     if (pump == 1){
-        nextWater = ntpTime + 1;
     }
     Serial.print("\"pump\":");
     Serial.println(pump);
@@ -237,7 +212,6 @@ void onMqttMessage(int messageSize) {
        */
 
 }
-
 
 void gpio_callback(uint gpio, uint32_t events) {
     // Put the GPIO event(s) that just happened into event_str
@@ -255,6 +229,7 @@ void setup() {
     digitalWrite(LED_BUILTIN, HIGH);
     pinMode(relayPin, OUTPUT);
     pinMode(irqPin, INPUT_PULLUP);
+    analogReadResolution(12);
 
     relayState = false;
     digitalWrite(relayPin, relayState);
@@ -276,30 +251,6 @@ void setup() {
     ArduinoOTA.setPassword("666666");  // Set the network port connection
     ArduinoOTA.begin();            // Initialize the OTA.  初始化OTA
     Serial.println("OTA ready!");  // M5.lcd port output format str§
-    nextWater =  ntpTime + 24UL * 3600UL; // start next day
-    EEPROM.begin(256);
-    // unsigned long val;
-    /*
-    EEPROM.put(NH2O_E_ADD, nextWater);
-    EEPROM.put(SUMH2O_E_ADD, 0);
-    EEPROM.put(CNTH2O_E_ADD, 0);
-    EEPROM.put(REBOOTS_E_ADD, 0);
-    if (EEPROM.commit()) {
-        Serial.println("EEPROM successfully committed");
-    } else {
-        Serial.println("ERROR! EEPROM commit failed");
-    }
-    */
-    EEPROM.get(NH2O_E_ADD, nextWater);
-    EEPROM.get(SUMH2O_E_ADD, sumWater);
-    EEPROM.get(CNTH2O_E_ADD, irqCount);
-    EEPROM.get(REBOOTS_E_ADD, reboots);
-    Serial.print("Reboots:  ");
-    Serial.println(reboots);
-    //Serial.print("Size:  ");
-    //Serial.println(sizeof(unsigned long));
-    Serial.print("End setup(). Next H20 ");
-    Serial.println(nextWater);
     delay(20);
 }
 
@@ -321,23 +272,6 @@ void loop() {
     unsigned long ntpTime = nowTime;
     gmtime_r(&nowTime, &timeinfo);
 
-    if (ntpTime > nextWater){
-        nextWater =  ntpTime + 24UL * 3600UL; // repeat next day
-        stopPump = now + waterAutoOn * 1000UL;
-        sumWater += waterAutoOn;
-        relayState = true;
-        digitalWrite(relayPin, relayState);
-    }
-    if (now > stopPump){
-        relayState = false;
-        digitalWrite(relayPin, relayState);
-    }
-    if (now > irqNext){
-        gpio_set_irq_enabled(irqPin, GPIO_IRQ_EDGE_FALL, true);
-        irqNext = millis() + 60 * 2000UL;
-    }
-
-
     if (now - lastWifiCheck > wifiPeriod) {
         lastWifiCheck = now;
         reconnectWifi();
@@ -350,41 +284,44 @@ void loop() {
             digitalWrite(LED_BUILTIN, ledState);
         }
 
-    int rawADC_HR, rawADC_HL;
+    long rawADC_voltage, rawADC_agnd;
     if (now - lastMsg > msgPeriod) {
         lastMsg = now;
 
-        rawADC_HR = analogRead(HR_PIN);
-        rawADC_HL = analogRead(HL_PIN);
-        snprintf(msg, MSG_BUFFER_SIZE, "Water ADC HL: %u, ADC HR: %u, %lu, ",
-                rawADC_HL, rawADC_HR, ntpTime);
-        Serial.print(msg);
-        strftime(msg, MSG_BUFFER_SIZE, "%Y-%m-%dT%H:%M:%SZ", &timeinfo);
-        Serial.print(msg);
-        Serial.print(", Wifi:"); Serial.print(wifiOK);
+        //digitalWrite(PS_PIN, HIGH);
+        const int AVERAGE_CNT = 100;
+        int v=0l;
+        int g=0l;
+        for(int i=0; i<AVERAGE_CNT; i++){
+            v += analogRead(SENSE_PIN);
+            g += analogRead(AGND_PIN);
+            delayMicroseconds(100);
+        }
+        rawADC_voltage = v/AVERAGE_CNT;
+        rawADC_agnd = g/AVERAGE_CNT;
+        //digitalWrite(PS_PIN, LOW);
+        auto voltage = (rawADC_voltage - rawADC_agnd) * 0.000805664 * (10560.0/560.0) * 1.011739876; //substract ground offset, multiplicate with resolution and voltage divider ratio and calib factor
+        auto rssi = WiFi.RSSI();
+        auto coreTemp = analogReadTemp();
+
+        snprintf(msg, MSG_BUFFER_SIZE, ", Voltage raw: %u, AGnd: %u, Voltage: %.3f, RSSI: %i, Temp: %.1f\n", rawADC_voltage, rawADC_agnd, voltage, rssi, coreTemp);
+        Serial.print("Wifi:"); Serial.print(wifiOK);
         Serial.print(" mqttClient: "); Serial.print(mqttClient.connected());
-        Serial.print(" Reboots: "); Serial.print(reboots);
-        Serial.print(" relay: "); Serial.print(relayState);
-        Serial.print(" GPIO irqs "); Serial.println(irqCount);
+        Serial.print(msg);
 
         bool retained = false;
         int qos = 1;
-        // bool dup = false;
 
-        float coreTemp = analogReadTemp();
+        mqttClient.beginMessage(outTopicVoltage, retained, qos);
+        mqttClient.print(voltage, 3);
+        mqttClient.endMessage();
 
-        doc["humidL"] = rawADC_HL;
-        doc["humidR"] = rawADC_HR;
+        mqttClient.beginMessage(outTopicTemperature);
+        mqttClient.print(coreTemp);
+        mqttClient.endMessage();
 
-        doc["time"] = msg;
-        doc["tempCore"] = coreTemp;
-        doc["count"]   = nowTime;
-        doc["sumWater"] = sumWater;
-        doc["reboots"] = reboots;
-        //doc["payload"]   = payload;
-
-        mqttClient.beginMessage(outTopic,  (unsigned long) measureJson(doc), retained, qos, false);
-        serializeJson(doc, mqttClient);
+        mqttClient.beginMessage(outTopicRSSI);
+        mqttClient.print(rssi);
         mqttClient.endMessage();
     }
 
