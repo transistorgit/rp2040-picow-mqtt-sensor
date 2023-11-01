@@ -38,8 +38,8 @@ const int AGND_PIN = A1; // PICO pin 32, Measure analog ground level
 const int relayPin = 22; // PICO pin 29
 unsigned int irqPin = PIN_D21;
 
-const int msgPeriod = 1 * 1000U;
-const int wifiPeriod = 300 * 1000U;
+const int MsgPeriod = 100; //ms
+const int WifiPeriod = 300 * 1000; //5min
 int ledPeriod = 2 * 1000UL;
 
 const char* mqttBroker = "192.168.168.112";
@@ -272,7 +272,7 @@ void loop() {
     unsigned long ntpTime = nowTime;
     gmtime_r(&nowTime, &timeinfo);
 
-    if (now - lastWifiCheck > wifiPeriod) {
+    if (now - lastWifiCheck > WifiPeriod) {
         lastWifiCheck = now;
         reconnectWifi();
     }
@@ -285,7 +285,7 @@ void loop() {
         }
 
     long rawADC_voltage, rawADC_agnd;
-    if (now - lastMsg > msgPeriod) {
+    if (now - lastMsg > MsgPeriod) {
         lastMsg = now;
 
         //digitalWrite(PS_PIN, HIGH);
